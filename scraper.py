@@ -14,7 +14,7 @@ DATA_DIR = "data"
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 CHAPTERS_FILE = os.path.join(DATA_DIR, "chapters.json")
 OUTPUT_EPUB = "A_Regressors_Tale_of_Cultivation.epub"
-CONCURRENCY_LIMIT = 5  # Number of parallel pages
+CONCURRENCY_LIMIT = 10  # Number of parallel pages
 MAX_RETRIES = 3
 
 def ensure_dirs():
