@@ -14,7 +14,7 @@ DATA_DIR = "data"
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 CHAPTERS_FILE = os.path.join(DATA_DIR, "chapters.json")
 OUTPUT_EPUB = "A_Regressors_Tale_of_Cultivation.epub"
-CONCURRENCY_LIMIT = 10  # Number of parallel pages
+CONCURRENCY_LIMIT = 10  # Adjust based on system resources
 MAX_RETRIES = 3
 
 def ensure_dirs():
@@ -191,7 +191,7 @@ async def scrape_chapter_content_async(context, url, slug, meta_title=None):
                     if "Chapter 807" in text or "Chapter 808" in text or "Afterword" in text:
                         is_title_p = True
 
-                if any(kw in text for kw in ad_keywords) and not is_title_p:
+                if any(kw.lower() in text.lower() for kw in ad_keywords) and not is_title_p:
                     continue
                 
                 if not text:
@@ -297,7 +297,7 @@ def create_epub(metadata_obj, chapters_data):
     
     book = epub.EpubBook()
     book.set_identifier("rtoc-scraper-002")
-    book.set_title("A Regressor’s Tale of Cultivation")
+    book.set_title("A Regressor's Tale of Cultivation")
     book.set_language("en")
     book.add_author("엄청난 (Tremendous)")
 
