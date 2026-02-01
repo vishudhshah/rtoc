@@ -32,16 +32,26 @@ def save_json(filepath, data):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-async def handle_popup(page):
+async def handle_popup(page, wait_for_visible=False):
     try:
-        button = page.get_by_role("button", name="I understand", exact=False)
-        if await button.is_visible():
+        # Wait a moment for dynamic content or popups to appear
+        # The 'I understand' button might take a second to render
+        button = page.locator("button").filter(has_text=re.compile(r"I understand", re.I)).first
+        
+        if wait_for_visible:
+            await button.wait_for(state="visible", timeout=5000)
+            print("Found 'I understand' popup. Clicking...")
+            await button.click()
+            # Wait for the popup to disappear
+            await button.wait_for(state="hidden", timeout=5000)
+            print("Popup dismissed.")
+        elif await button.is_visible():
             await button.click()
             print("Clicked 'I understand' popup.")
     except Exception:
         pass
 
-async def generate_metadata_async(max_pages=40, existing_metadata=None):
+async def generate_metadata_async(max_pages=40, existing_metadata=None, force_full_scan=False):
     if existing_metadata is None:
         existing_metadata = {}
     print("Checking for new chapters...")
@@ -55,7 +65,7 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None):
         page = await browser.new_page()
         await page.goto(SERIES_URL)
         
-        await handle_popup(page)
+        await handle_popup(page, wait_for_visible=True)
         
         # Extract cover image URL
         cover_image_url = None
@@ -91,82 +101,144 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None):
             print(f"Warning: Could not click chapters list tab or wait for content: {e}")
 
         async def extract_current_page():
-            # Ensure we only look inside the active chapters list container
-            list_container = page.locator('div[role="tabpanel"][id*="-content-chapters_list"]')
-            content = await list_container.inner_html()
-            soup = BeautifulSoup(content, 'html.parser')
+            # Use evaluate to extract data directly from the DOM, which is more robust than inner_html+BS4
+            # especially for dynamic frameworks like Next.js
+            chapters_data = await page.evaluate('''() => {
+                const container = document.querySelector('div[role="tabpanel"][id*="-content-chapters_list"]');
+                if (!container) return [];
+                
+                const links = Array.from(container.querySelectorAll('a[href*="/series/a-regressors-tale-of-cultivation/"]'));
+                return links.map(link => {
+                    const href = link.getAttribute('href');
+                    const text = link.innerText;
+                    // Check for "Paid" indicator - usually in a span or sibling text
+                    // Based on HTML structure, the link wraps the li.
+                    // We check the entire text content of the link for "Paid" or "Locked" keywords if necessary,
+                    // but usually paid chapters have a lock icon or specific text.
+                    // Checking parent or structure can be done here.
+                    
+                    // Simple check on text
+                    const isPaid = text.includes("Paid") || text.includes("Locked");
+                    
+                    return { href, text, isPaid };
+                });
+            }''')
+
             links_found = 0
             all_already_known = True
             
-            # Find all potential chapter links in this specific container
-            all_links = soup.find_all('a', href=re.compile(r'/series/a-regressors-tale-of-cultivation/'))
-            
-            for link in all_links:
-                href = link.get('href')
+            for item in chapters_data:
+                href = item['href']
                 slug = href.split('/')[-1]
+                
                 if not slug or slug == 'a-regressors-tale-of-cultivation':
                     continue
                 
-                # Filter out 'Paid' chapters
-                parent_text = link.find_parent('li').get_text() if link.find_parent('li') else ""
-                if "Paid" in parent_text:
+                if item['isPaid']:
                     continue
-
+                
+                # Clean title and parse date (simplified from original BS4 logic)
+                # We need to port the logic:
+                # original: parent_text = link.find_parent('li').get_text() ...
+                # The text is now in item['text'] (since a wraps li, innerText includes everything)
+                
+                raw_text = item['text']
+                # Extract title
+                # Usually "Chapter X ... \n ... date"
+                lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                clean_title = slug
+                release_date = "Unknown"
+                
+                if lines:
+                    clean_title = lines[0] # First line is usually the title
+                    if len(lines) > 1:
+                        # Try to find date in subsequent lines
+                        for line in lines[1:]:
+                            # Simple heuristic for date
+                            if re.search(r'\d{1,2}/\d{1,2}/\d{4}|\d+\s+days?\s+ago|yesterday|today', line, re.I):
+                                release_date = line
+                                break
+                
                 if slug not in metadata:
                     all_already_known = False
-                    temp_link = BeautifulSoup(str(link), 'html.parser').find('a')
-                    date_span = temp_link.find('span', class_=re.compile(r'text-muted-foreground.*text-\[10px\]'))
-                    release_date = "Unknown"
-                    if date_span:
-                        release_date = date_span.get_text(strip=True)
-                        date_span.decompose()
-                    
-                    # Collect unique text from spans to avoid duplication (e.g. Author's Q&A (12))
-                    span_texts = []
-                    for s in temp_link.find_all('span'):
-                        txt = s.get_text(strip=True)
-                        if txt and txt not in span_texts:
-                            span_texts.append(txt)
-                    
-                    clean_title = " ".join(span_texts)
-                    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-                    
-                    metadata[slug] = {
-                        "url": BASE_URL + href if href.startswith('/') else href,
-                        "title": clean_title,
-                        "release_date": release_date,
-                        "slug": slug
-                    }
-                    new_slugs.append(slug)
-                    links_found += 1
-            return links_found, all_already_known
 
+                metadata[slug] = {
+                    "url": BASE_URL + href if href.startswith('/') else href,
+                    "title": clean_title,
+                    "release_date": release_date,
+                    "slug": slug
+                }
+                new_slugs.append(slug)
+                links_found += 1
+            
+            # Return the first slug found to help detect page changes
+            first_slug = None
+            for item in chapters_data:
+                slug = item['href'].split('/')[-1]
+                if slug and slug != 'a-regressors-tale-of-cultivation':
+                    first_slug = slug
+                    break
+                    
+            return links_found, all_already_known, first_slug
+
+        current_page_first_slug = None
+        
         for p_idx in range(1, max_pages + 1):
             print(f"Generating metadata page {p_idx}...")
-            new_links, all_known = await extract_current_page()
-            if new_links > 0:
-                print(f"Found {new_links} new chapter links on page {p_idx}.")
             
-            if all_known:
+            # If we just navigated, ensure the content has actually changed
+            retries = 0
+            while True:
+                new_links, all_known, first_slug = await extract_current_page()
+                
+                # If we have a previous slug to compare against, and they are the same,
+                # it means the page hasn't updated yet.
+                if current_page_first_slug and first_slug == current_page_first_slug and retries < 5:
+                    print(f"Page content hasn't changed yet, waiting... ({retries+1}/5)")
+                    await asyncio.sleep(2)
+                    retries += 1
+                    continue
+                break
+            
+            current_page_first_slug = first_slug
+
+            if new_links > 0:
+                print(f"Found {new_links} new chapter links on page {p_idx}")
+            
+            if all_known and not force_full_scan and new_links > 0:
                 print("All chapters on this page are already known. Stopping metadata scan.")
                 break
+            
+            # If we found 0 links on the first page, something is wrong (likely blocked)
+            if new_links == 0 and p_idx == 1:
+                print("Warning: No chapters found on textual scan of page 1. The page might be loading or blocked.")
+                # We don't break here to allow trying pagination or seeing if content loads late
+            elif new_links == 0 and all_known:
+                 # Standard end of list (empty page at end)
+                 print("No more chapters found. Stopping.")
+                 break
 
             try:
                 next_page_num = str(p_idx + 1)
-                next_button = page.locator("li a, li button").filter(has_text=re.compile(f"^{next_page_num}$")).first
+                # Broader selector for pagination numbers
+                next_button = page.locator("li a, li button, button").filter(has_text=re.compile(f"^{next_page_num}$")).first
                 if await next_button.is_visible():
                     await next_button.click()
-                    await asyncio.sleep(2)
+                    # Initial wait for click to register
+                    await asyncio.sleep(1)
                 else:
-                    next_button = page.locator("li a, li button").filter(has_text=re.compile(r"^>$|Next", re.I)).first
+                    # Broader selector for Next button
+                    next_button = page.locator("li a, li button, button, a").filter(has_text=re.compile(r"^>$|Next", re.I)).first
                     if await next_button.is_visible():
                         await next_button.click()
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1)
                     else:
                         print(f"No more pagination buttons found at page {p_idx}.")
                         break
             except Exception as e:
                 print(f"Error navigating to next page: {e}")
+                # Try to handle popup in case it appeared late
+                await handle_popup(page, wait_for_visible=True)
                 break
                 
         await browser.close()
@@ -386,7 +458,7 @@ async def main(limit_indices=None, force_rebuild=False):
     metadata_obj = load_json(METADATA_FILE)
     
     # Always check for new chapters
-    metadata_obj = await generate_metadata_async(existing_metadata=metadata_obj)
+    metadata_obj = await generate_metadata_async(existing_metadata=metadata_obj, force_full_scan=force_rebuild)
     if metadata_obj:
         save_json(METADATA_FILE, metadata_obj)
     else:
@@ -447,7 +519,7 @@ async def main(limit_indices=None, force_rebuild=False):
     if cover_url:
         cover_path = os.path.join(DATA_DIR, "cover.webp")
         if not os.path.exists(cover_path) or force_rebuild:
-            print(f"Downloading cover image: {cover_url}")
+            print("Downloading cover image...")
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(cover_url, follow_redirects=True)
