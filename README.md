@@ -6,7 +6,7 @@ A Python script to generate an EPUB of ***A Regressor's Tale of Cultivation*** f
 - **Built for E-Readers**: Generates a clean EPUB with a book cover, Table of Contents, and metadata.
 - **Ad-Free Experience**: Automatically removes website clutter, pop-ups, and promotional text.
 - **Automatic Updates**: Run it once to get the whole book; run it again later to pick up only the newly released chapters.
-- **Smart Formatting**: Correctly handles tricky merged chapters (like 807-808) and adds official cover art.
+- **Smart Formatting**: Correctly handles tricky merged chapters (like 807-808), includes author's notes/Q&As, and adds official cover art.
 - **High Performance**: Optimized for speed, limited only by your internet connection.
 
 ## Quick Start
