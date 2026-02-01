@@ -41,7 +41,7 @@ async def handle_popup(page):
     except Exception:
         pass
 
-async def scrape_metadata_async(max_pages=40, existing_metadata=None):
+async def generate_metadata_async(max_pages=40, existing_metadata=None):
     if existing_metadata is None:
         existing_metadata = {}
     print("Checking for new chapters...")
@@ -142,12 +142,12 @@ async def scrape_metadata_async(max_pages=40, existing_metadata=None):
             return links_found, all_already_known
 
         for p_idx in range(1, max_pages + 1):
-            print(f"Scraping metadata page {p_idx}...")
+            print(f"Generating metadata page {p_idx}...")
             new_links, all_known = await extract_current_page()
             if new_links > 0:
                 print(f"Found {new_links} new chapter links on page {p_idx}.")
             
-            if all_known and p_idx > 1: # On page 1, we might just be seeing the same stuff, but keep going for safety if p_idx == 1
+            if all_known:
                 print("All chapters on this page are already known. Stopping metadata scan.")
                 break
 
@@ -179,12 +179,12 @@ async def scrape_metadata_async(max_pages=40, existing_metadata=None):
     
     return {"metadata": metadata, "order": ordered_slugs, "cover_image_url": cover_image_url}
 
-async def scrape_chapter_content_async(context, url, slug, meta_title=None):
+async def generate_chapter_content_async(context, url, slug, meta_title=None):
     for attempt in range(MAX_RETRIES):
         page = await context.new_page()
         try:
             if attempt == 0:
-                print(f"Scraping {slug}")
+                print(f"Generating {slug}")
             else:
                 print(f"Retrying {slug} (Attempt {attempt + 1})")
             timeout = 30000 + (attempt * 10000)
@@ -316,12 +316,12 @@ async def worker(context, queue, chapters_data, semaphore):
         item = await queue.get()
         url, slug, meta_title = item
         async with semaphore:
-            result = await scrape_chapter_content_async(context, url, slug, meta_title)
+            result = await generate_chapter_content_async(context, url, slug, meta_title)
             if result:
                 chapters_data.update(result)
                 save_json(CHAPTERS_FILE, chapters_data)
             else:
-                print(f"Failed to scrape {slug} after retries.")
+                print(f"Failed to generate {slug} after retries.")
         queue.task_done()
 
 def create_epub(metadata_obj, chapters_data):
@@ -331,7 +331,7 @@ def create_epub(metadata_obj, chapters_data):
     cover_image_url = metadata_obj.get("cover_image_url")
     
     book = epub.EpubBook()
-    book.set_identifier("rtoc-scraper-002")
+    book.set_identifier("rtoc-generator-002")
     book.set_title("A Regressor's Tale of Cultivation")
     book.set_language("en")
     book.add_author("엄청난 (Tremendous)")
@@ -342,7 +342,7 @@ def create_epub(metadata_obj, chapters_data):
         with open(cover_path, 'rb') as f:
             book.set_cover("cover.webp", f.read())
     elif cover_image_url:
-        print("Warning: Cover image URL found but local image missing. Run without --force to potentially skip download if already existing (not applicable here), or check scrape logs.")
+        print("Warning: Cover image URL found but local image missing. Run without --force to potentially skip download if already existing (not applicable here), or check generation logs.")
 
     style = 'p { margin-bottom: 1.2em; line-height: 1.5; } h1 { text-align: center; } .date { text-align: center; font-style: italic; color: #666; margin-bottom: 2em; }'
     nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
@@ -386,7 +386,7 @@ async def main(limit_indices=None, force_rebuild=False):
     metadata_obj = load_json(METADATA_FILE)
     
     # Always check for new chapters
-    metadata_obj = await scrape_metadata_async(existing_metadata=metadata_obj)
+    metadata_obj = await generate_metadata_async(existing_metadata=metadata_obj)
     if metadata_obj:
         save_json(METADATA_FILE, metadata_obj)
     else:
@@ -405,28 +405,28 @@ async def main(limit_indices=None, force_rebuild=False):
             
         meta = metadata[slug]
         
-        # Check if already scraped
-        already_scraped = False
+        # Check if already generated
+        already_generated = False
         if slug == "chapter-807-808":
             if "chapter-807" in chapters_data and "chapter-808" in chapters_data:
-                already_scraped = True
+                already_generated = True
         elif slug in chapters_data:
             # Check if title is just the slug (indicates retry might be needed or meta was better)
             ch_data = chapters_data[slug]
             if ch_data.get("title") == slug and slug.startswith("chapter-"):
-                already_scraped = False
+                already_generated = False
             else:
-                already_scraped = True
+                already_generated = True
         
-        if already_scraped and not force_rebuild:
+        if already_generated and not force_rebuild:
             continue
             
         await queue.put((meta['url'], slug, meta.get('title')))
 
     if queue.empty():
-        print("No new/missing chapters to scrape.")
+        print("No new/missing chapters to generate.")
     else:
-        print(f"Starting scraping of {queue.qsize()} items...")
+        print(f"Starting generation of {queue.qsize()} items...")
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context()
@@ -440,7 +440,7 @@ async def main(limit_indices=None, force_rebuild=False):
             for task in tasks: task.cancel()
             await browser.close()
 
-    print("Scraping complete.")
+    print("Generation complete.")
     
     # Download cover if needed
     cover_url = metadata_obj.get("cover_image_url")
