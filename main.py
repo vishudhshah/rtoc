@@ -335,7 +335,8 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                     
                     for line in lines:
                         match807 = re.search(r'Chapter 807[:\s\-].*$', line, re.I)
-                        match808 = re.search(r'(Chapter 808[:\s\-].*|(?<!\w)Afterword[:\s\-].*)$', line, re.I)
+                        # Fix: Anchor Afterword to start of line to avoid matching usage in sentences
+                        match808 = re.search(r'(Chapter 808[:\s\-].*|^Afterword(?:[:\s\.\-].*)?)$', line, re.I)
                         
                         if match807:
                             title807 = match807.group(0).strip()
