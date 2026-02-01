@@ -7,6 +7,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from ebooklib import epub
+import httpx
 
 BASE_URL = "https://wetriedtls.com"
 SERIES_URL = f"{BASE_URL}/series/a-regressors-tale-of-cultivation"
@@ -40,11 +41,15 @@ async def handle_popup(page):
     except Exception:
         pass
 
-async def scrape_metadata_async(max_pages=40):
-    print("Scraping series metadata (all pages)...")
-    metadata = {}
-    ordered_slugs = []
+async def scrape_metadata_async(max_pages=40, existing_metadata=None):
+    if existing_metadata is None:
+        existing_metadata = {}
+    print("Checking for new chapters...")
+    metadata = existing_metadata.get("metadata", {}).copy()
+    ordered_slugs = existing_metadata.get("order", []).copy()
     
+    # Track new chapters found
+    new_slugs = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -52,6 +57,25 @@ async def scrape_metadata_async(max_pages=40):
         
         await handle_popup(page)
         
+        # Extract cover image URL
+        cover_image_url = None
+        try:
+            # Wait for any image that might be the cover
+            await page.wait_for_selector('img.rounded', timeout=10000)
+            # Find the main cover image
+            # Based on browser subagent: div.lg:col-span-3 div > img.rounded
+            img_element = page.locator('div.lg\\:col-span-3 div > img.rounded').first
+            if await img_element.is_visible():
+                cover_image_url = await img_element.get_attribute('src')
+                # If it's a next/image URL, try to get the original if possible, or just use it
+                if cover_image_url and "_next/image?url=" in cover_image_url:
+                    match = re.search(r'url=([^&]+)', cover_image_url)
+                    if match:
+                        from urllib.parse import unquote
+                        cover_image_url = unquote(match.group(1))
+        except Exception as e:
+            print(f"Warning: Could not find cover image: {e}")
+
         # Click on "Chapters list" tab
         try:
             tab = page.locator("button, a, span").filter(has_text=re.compile(r"Chapters list", re.I)).first
@@ -72,6 +96,7 @@ async def scrape_metadata_async(max_pages=40):
             content = await list_container.inner_html()
             soup = BeautifulSoup(content, 'html.parser')
             links_found = 0
+            all_already_known = True
             
             # Find all potential chapter links in this specific container
             all_links = soup.find_all('a', href=re.compile(r'/series/a-regressors-tale-of-cultivation/'))
@@ -88,6 +113,7 @@ async def scrape_metadata_async(max_pages=40):
                     continue
 
                 if slug not in metadata:
+                    all_already_known = False
                     temp_link = BeautifulSoup(str(link), 'html.parser').find('a')
                     date_span = temp_link.find('span', class_=re.compile(r'text-muted-foreground.*text-\[10px\]'))
                     release_date = "Unknown"
@@ -111,15 +137,20 @@ async def scrape_metadata_async(max_pages=40):
                         "release_date": release_date,
                         "slug": slug
                     }
-                    ordered_slugs.append(slug)
+                    new_slugs.append(slug)
                     links_found += 1
-            return links_found
+            return links_found, all_already_known
 
         for p_idx in range(1, max_pages + 1):
             print(f"Scraping metadata page {p_idx}...")
-            new_links = await extract_current_page()
-            print(f"Found {new_links} new chapter links on page {p_idx}.")
+            new_links, all_known = await extract_current_page()
+            if new_links > 0:
+                print(f"Found {new_links} new chapter links on page {p_idx}.")
             
+            if all_known and p_idx > 1: # On page 1, we might just be seeing the same stuff, but keep going for safety if p_idx == 1
+                print("All chapters on this page are already known. Stopping metadata scan.")
+                break
+
             try:
                 next_page_num = str(p_idx + 1)
                 next_button = page.locator("li a, li button").filter(has_text=re.compile(f"^{next_page_num}$")).first
@@ -140,10 +171,13 @@ async def scrape_metadata_async(max_pages=40):
                 
         await browser.close()
         
-    # Website is descending (latest first). Reverse to get release order (oldest first).
-    ordered_slugs.reverse()
+    # Websites often list newest first. Chapter order should be oldest first for the EPUB.
+    # We prepended new ones (descending), so we need to reverse them and extend the old list.
+    if new_slugs:
+        new_slugs.reverse()
+        ordered_slugs.extend(new_slugs)
     
-    return {"metadata": metadata, "order": ordered_slugs}
+    return {"metadata": metadata, "order": ordered_slugs, "cover_image_url": cover_image_url}
 
 async def scrape_chapter_content_async(context, url, slug, meta_title=None):
     for attempt in range(MAX_RETRIES):
@@ -294,12 +328,21 @@ def create_epub(metadata_obj, chapters_data):
     print("Generating EPUB...")
     metadata = metadata_obj.get("metadata", {})
     ordered_slugs = metadata_obj.get("order", [])
+    cover_image_url = metadata_obj.get("cover_image_url")
     
     book = epub.EpubBook()
     book.set_identifier("rtoc-scraper-002")
     book.set_title("A Regressor's Tale of Cultivation")
     book.set_language("en")
     book.add_author("엄청난 (Tremendous)")
+
+    # Handle cover image
+    cover_path = os.path.join(DATA_DIR, "cover.webp")
+    if os.path.exists(cover_path):
+        with open(cover_path, 'rb') as f:
+            book.set_cover("cover.webp", f.read())
+    elif cover_image_url:
+        print("Warning: Cover image URL found but local image missing. Run without --force to potentially skip download if already existing (not applicable here), or check scrape logs.")
 
     style = 'p { margin-bottom: 1.2em; line-height: 1.5; } h1 { text-align: center; } .date { text-align: center; font-style: italic; color: #666; margin-bottom: 2em; }'
     nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
@@ -341,10 +384,14 @@ def create_epub(metadata_obj, chapters_data):
 async def main(limit_indices=None, force_rebuild=False):
     ensure_dirs()
     metadata_obj = load_json(METADATA_FILE)
-    if not metadata_obj or "order" not in metadata_obj:
-        metadata_obj = await scrape_metadata_async()
-        if metadata_obj: save_json(METADATA_FILE, metadata_obj)
-        else: return
+    
+    # Always check for new chapters
+    metadata_obj = await scrape_metadata_async(existing_metadata=metadata_obj)
+    if metadata_obj:
+        save_json(METADATA_FILE, metadata_obj)
+    else:
+        print("Error: Could not retrieve metadata.")
+        return
 
     metadata = metadata_obj.get("metadata", {})
     ordered_slugs = metadata_obj.get("order", [])
@@ -394,6 +441,25 @@ async def main(limit_indices=None, force_rebuild=False):
             await browser.close()
 
     print("Scraping complete.")
+    
+    # Download cover if needed
+    cover_url = metadata_obj.get("cover_image_url")
+    if cover_url:
+        cover_path = os.path.join(DATA_DIR, "cover.webp")
+        if not os.path.exists(cover_path) or force_rebuild:
+            print(f"Downloading cover image: {cover_url}")
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(cover_url, follow_redirects=True)
+                    if resp.status_code == 200:
+                        with open(cover_path, "wb") as f:
+                            f.write(resp.content)
+                        print("Cover image downloaded.")
+                    else:
+                        print(f"Failed to download cover image: Status {resp.status_code}")
+            except Exception as e:
+                print(f"Error downloading cover image: {e}")
+
     if chapters_data:
         create_epub(metadata_obj, chapters_data)
 
