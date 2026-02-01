@@ -10,18 +10,44 @@ A Python script to generate an EPUB of ***A Regressor's Tale of Cultivation*** f
 - **High Performance**: Optimized for speed, limited only by your internet connection.
 
 ## Quick Start
-1. **Install dependencies:**
-   ```bash
-   # You may need to use 'pip' or 'pip3' depending on your setup
-   pip3 install playwright ebooklib beautifulsoup4 lxml
-   playwright install chromium
-   ```
-2. **Run the generator:**
-   ```bash
-   # You may need to use 'python' or 'python3' depending on your setup
-   python3 main.py
-   ```
-   *Note: Requires an active internet connection. The final EPUB and a cache folder (`data/`) will be generated in the current directory.*
+
+### 1. Set up the environment
+It is **highly recommended** to use a virtual environment to avoid conflicts (and it's required on many modern systems).
+
+**Windows (PowerShell):**
+```powershell
+# Create virtual environment
+python -m venv venv
+
+# Activate it
+.\venv\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r requirements.txt
+playwright install chromium
+```
+
+**Mac/Linux:**
+```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate it
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 2. Run the generator
+```bash
+# You may need to use 'python' or 'python3' depending on your setup
+python main.py
+```
+*Note: Requires an active internet connection. The final EPUB and a cache folder (`data/`) will be generated in the current directory.*
+
+**Troubleshooting:** If you get a "command not found" error, try using `python3` instead of `python`, or `pip3` instead of `pip` in the installation steps above.
 
 ## Advanced Usage
 - **Specific Chapters** (by index):
