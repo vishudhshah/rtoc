@@ -137,6 +137,10 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
                 if item['isPaid']:
                     continue
                 
+                # Check for existing metadata first to prevent duplicates
+                if slug in metadata:
+                    continue
+                
                 # Clean title and parse date (simplified from original BS4 logic)
                 # We need to port the logic:
                 # original: parent_text = link.find_parent('li').get_text() ...
@@ -161,6 +165,7 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
                 
                 if slug not in metadata:
                     all_already_known = False
+                    new_slugs.append(slug)
 
                 metadata[slug] = {
                     "url": BASE_URL + href if href.startswith('/') else href,
@@ -168,7 +173,6 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
                     "release_date": release_date,
                     "slug": slug
                 }
-                new_slugs.append(slug)
                 links_found += 1
             
             # Return the first slug found to help detect page changes
@@ -178,8 +182,19 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
                 if slug and slug != 'a-regressors-tale-of-cultivation':
                     first_slug = slug
                     break
-                    
-            return links_found, all_already_known, first_slug
+
+            page_valid_links_count = 0
+            all_known_on_this_page = True
+            
+            for item in chapters_data:
+                 slug = item['href'].split('/')[-1]
+                 if slug and slug != 'a-regressors-tale-of-cultivation' and not item['isPaid']:
+                     page_valid_links_count += 1
+                     # If this slug WAS added to new_slugs just now, it means it wasn't known before
+                     if slug in new_slugs: 
+                         all_known_on_this_page = False
+                     
+            return page_valid_links_count, all_known_on_this_page, first_slug
 
         current_page_first_slug = None
         
