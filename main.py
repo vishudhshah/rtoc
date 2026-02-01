@@ -331,7 +331,7 @@ def create_epub(metadata_obj, chapters_data):
     cover_image_url = metadata_obj.get("cover_image_url")
     
     book = epub.EpubBook()
-    book.set_identifier("rtoc-generator-002")
+    book.set_identifier("rtoc")
     book.set_title("A Regressor's Tale of Cultivation")
     book.set_language("en")
     book.add_author("엄청난 (Tremendous)")
