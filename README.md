@@ -19,6 +19,9 @@ It is **highly recommended** to use a virtual environment to avoid conflicts (an
 # Create virtual environment
 python -m venv venv
 
+# Allow script execution (run if activation fails)
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 # Activate it
 .\venv\Scripts\Activate.ps1
 
