@@ -138,31 +138,73 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
                     continue
                 
                 # Check for existing metadata first to prevent duplicates
-                if slug in metadata:
-                    continue
+                # if slug in metadata:
+                #    continue
                 
                 # Clean title and parse date (simplified from original BS4 logic)
-                # We need to port the logic:
-                # original: parent_text = link.find_parent('li').get_text() ...
-                # The text is now in item['text'] (since a wraps li, innerText includes everything)
-                
                 raw_text = item['text']
                 # Extract title
                 # Usually "Chapter X ... \n ... date"
                 lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
                 clean_title = slug
+                
+                # Check for "Chapter X" in the text to use as base, instead of slug
+                # This handles cases where slug is "chapter-211" but title text is "Chapter 211"
+                if lines:
+                    possible_header = lines[0]
+                    if possible_header.lower().replace(" ", "-") == slug.lower() or "chapter" in possible_header.lower():
+                         clean_title = possible_header
+
                 release_date = "Unknown"
                 
                 if lines:
                     clean_title = lines[0] # First line is usually the title
                     if len(lines) > 1:
                         # Try to find date in subsequent lines
-                        for line in lines[1:]:
+                        for i, line in enumerate(lines[1:], 1):
                             # Simple heuristic for date
                             if re.search(r'\d{1,2}/\d{1,2}/\d{4}|\d+\s+days?\s+ago|yesterday|today', line, re.I):
                                 release_date = line
+                                # Date found. Check if the line BEFORE it was a subtitle.
+                                if i == 2:
+                                    potential_subtitle = lines[1].strip()
+                                    # Filter out common non-title badges
+                                    bad_badges = ["Spoiler", "Paid", "Locked", "New"]
+                                    if potential_subtitle and not any(x in potential_subtitle for x in bad_badges):
+                                         # Improved subtitle logic
+                                         # 1. If subtitle contains the full title (e.g. Title="Author's Q&A", Sub="Author's Q&A (1)"), use subtitle.
+                                         if clean_title in potential_subtitle:
+                                             clean_title = potential_subtitle
+                                         # 2. If title contains subtitle, do nothing.
+                                         elif potential_subtitle in clean_title:
+                                             pass
+                                         # 3. Otherwise append if not already present
+                                         elif ":" not in clean_title and not clean_title.endswith(potential_subtitle):
+                                             clean_title = f"{clean_title}: {potential_subtitle}"
                                 break
                 
+                # Check for existing metadata
+                if slug in metadata:
+                    # Check if we should update the title
+                    existing_title = metadata[slug].get("title", "")
+                    
+                    # Update if new title has a subtitle (contains :) and old one didn't,
+                    # or if new title is significantly longer and contains the old title.
+                    should_update = False
+                    if ":" in clean_title and ":" not in existing_title:
+                        should_update = True
+                    elif len(clean_title) > len(existing_title) + 5 and existing_title in clean_title:
+                        should_update = True
+                        
+                    if should_update:
+                        print(f"Updating metadata for {slug}: '{existing_title}' -> '{clean_title}'")
+                        metadata[slug]["title"] = clean_title
+                        if release_date != "Unknown":
+                            metadata[slug]["release_date"] = release_date
+                        all_already_known = False  # treat as "new" to keep scanning
+                    
+                    continue
+
                 if slug not in metadata:
                     all_already_known = False
                     new_slugs.append(slug)
@@ -218,7 +260,7 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
             current_page_first_slug = first_slug
 
             if new_links > 0:
-                print(f"Found {new_links} new chapter links on page {p_idx}")
+                print(f"Found {new_links} chapter links on page {p_idx}")
             
             if all_known and not force_full_scan and new_links > 0:
                 print("All chapters on this page are already known. Stopping metadata scan.")
@@ -292,7 +334,7 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                 await page.close()
                 continue
                 
-            p_tags = container.find_all('p')
+            p_tags = container.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
             ad_keywords = ["Discord", "Ko-fi", "Patreon", "Want more chapters", "Next chapter", "Previous chapter", "Consider supporting"]
             
             title_pattern = ""
@@ -370,9 +412,14 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                     # Look for "Chapter X: ..." or similar. Spacer is optional.
                     # This allows matching "Prologue" or "Chapter 1" exactly.
                     match = re.search(rf'^({title_search_pattern}([:\s\-].*)?)$', line, re.I)
-                    if not match and title_pattern: 
+                    if not match and title_pattern:
                         match = re.search(rf'^({title_pattern}(\s+.*)?)$', line, re.I)
-                    
+
+                    # Fallback: Check for generic "Chapter Digits" if specific pattern failed
+                    # This helps if the chapter content has a typo (e.g. Chapter 228 instead of 238)
+                    if not match:
+                        match = re.search(r'^(Chapter \d+([:\s\-].*)?)$', line, re.I)
+
                     if match:
                         potential_title = match.group(1).strip()
                         # Clean the potential title
@@ -485,6 +532,27 @@ async def main(limit_indices=None, force_rebuild=False):
     ordered_slugs = metadata_obj.get("order", [])
     
     chapters_data = load_json(CHAPTERS_FILE)
+    
+    # Sync metadata titles to chapters_data if chapters_data has generic titles
+    data_changed = False
+    for slug, meta in metadata.items():
+        if slug in chapters_data:
+            ch_title = chapters_data[slug].get("title", "")
+            meta_title = meta.get("title", "")
+            
+            # If metadata title is "richer" (has subtitle) and chapter title doesn't, update chapter title
+            if ":" in meta_title and ":" not in ch_title:
+                print(f"Syncing title for {slug}: {ch_title} -> {meta_title}")
+                chapters_data[slug]["title"] = meta_title
+                data_changed = True
+            # Or if metadata title is just longer/different and current is generic
+            elif meta_title != ch_title and ch_title == slug:
+                chapters_data[slug]["title"] = meta_title
+                data_changed = True
+    
+    if data_changed:
+        save_json(CHAPTERS_FILE, chapters_data)
+        print("Updated chapters.json with improved titles from metadata.")
     
     queue = asyncio.Queue()
     for idx, slug in enumerate(ordered_slugs):
