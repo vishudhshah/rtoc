@@ -3,3 +3,4 @@ ebooklib>=0.17.1
 beautifulsoup4>=4.12.3
 lxml>=5.1.0
 httpx>=0.28.1
+smartypants>=2.0.1

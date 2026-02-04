@@ -2,8 +2,7 @@ import os
 import json
 import asyncio
 import re
-import time
-from datetime import datetime
+import smartypants
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from ebooklib import epub
@@ -17,6 +16,16 @@ CHAPTERS_FILE = os.path.join(DATA_DIR, "chapters.json")
 OUTPUT_EPUB = "A_Regressors_Tale_of_Cultivation.epub"
 CONCURRENCY_LIMIT = 10  # Adjust based on system resources
 MAX_RETRIES = 3
+
+DESCRIPTION = """On the way to a company workshop, we fell into a world of immortal cultivators while still in the car.
+
+Those with spiritual roots and unique abilities were all called to join cultivation sects, living prosperously.
+
+But I, having neither spiritual roots nor special abilities, lived as an ordinary mortal for 50 years, accepting my fate until my death.
+
+That’s what I thought.
+
+Until I regressed."""
 
 def ensure_dirs():
     if not os.path.exists(DATA_DIR):
@@ -308,6 +317,41 @@ async def generate_metadata_async(max_pages=40, existing_metadata=None, force_fu
     
     return {"metadata": metadata, "order": ordered_slugs, "cover_image_url": cover_image_url}
 
+def clean_text_node_content(text):
+    # 1. Handle mixed/double-single quotes -> double quotes
+    # The user requested 'double single quotes' be fixed to double quotes.
+    # We treat mixed artifacts (like ‘' or ’' or ‘' etc) as double quotes too.
+    text = text.replace("‘'", '"').replace("'‘", '"')
+    text = text.replace("’'", '"').replace("'’", '"')
+    text = text.replace("‘‘", '"').replace("’’", '"')
+    text = text.replace("''", '"')
+
+    # 2. Normalize remaining smart quotes to straight quotes to ensure clean slate
+    text = text.replace('“', '"').replace('”', '"')
+    text = text.replace('‘', "'").replace('’', "'")
+    return text
+
+def apply_smartypants(text):
+    if smartypants:
+        # q=quotes, d=dashes, e=ellipses, u=unicode (no HTML entities)
+        # We process the final HTML string, so skipping entities is safer/cleaner.
+        attr = smartypants.Attr.q | smartypants.Attr.d | smartypants.Attr.e | smartypants.Attr.u
+        return smartypants.smartypants(text, attr=attr)
+    return text
+
+def italicize_html_content(text):
+    # Italicize single quoted sentences
+    # Pattern looks for single quotes wrapping content.
+    # Inner content allows:
+    # 1. Any non-quote non-tag-start character: [^'<]
+    # 2. An apostrophe that is sandwiched between word characters (e.g. don't, it's): (?<=\w)'(?=\w)
+    pattern = r"(?<=[ >\n])'((?:[^'<]|(?<=\w)'(?=\w))+?)'(?=[ <.,;:!?\n])"
+    
+    # Use a callback to wrap in em tags
+    text = re.sub(pattern, r"<em>'\1'</em>", text)
+    
+    return text
+
 async def generate_chapter_content_async(context, url, slug, meta_title=None):
     for attempt in range(MAX_RETRIES):
         page = await context.new_page()
@@ -335,7 +379,7 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                 continue
                 
             p_tags = container.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-            ad_keywords = ["Discord", "Ko-fi", "Patreon", "Want more chapters", "Next chapter", "Previous chapter", "Consider supporting"]
+            ad_keywords = ["Discord", "Ko-fi", "Patreon", "Want more chapters", "Next chapter", "Previous chapter", "Consider supporting", "buymeacoffee", "TranslatingNovice", "Z0Rel", "BlueMangoAde"]
             
             title_pattern = ""
             if slug == "chapter-0":
@@ -345,22 +389,63 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                 if ch_num.isdigit():
                     title_pattern = f"Chapter {ch_num}"
             
+            # Extract title BEFORE filtering (to ensure we capture it even if the line has ads)
+            title = meta_title if meta_title else slug
+            found_title = False
+            title_search_pattern = title_pattern if title_pattern else r"(Chapter \d+|Author's Q&A \(\d+\)|Author's Tidbit \(\d+\))"
+            
+            # Look for title in the first few raw paragraphs
+            for p in p_tags[:10]:
+                text_with_newlines = p.get_text("\n", strip=True)
+                lines = [l.strip() for l in text_with_newlines.split("\n") if l.strip()]
+                
+                for line in lines:
+                    match = re.search(rf'^({title_search_pattern}([:\s\-].*)?)$', line, re.I)
+                    if not match and title_pattern:
+                        match = re.search(rf'^({title_pattern}(\s+.*)?)$', line, re.I)
+
+                    if not match:
+                        match = re.search(r'^(Chapter \d+([:\s\-].*)?)$', line, re.I)
+
+                    if match:
+                        potential_title = match.group(1).strip()
+                        # Clean the potential title from ads if they are inextricably linked (rare in regex mismatch but possible)
+                        # We use the raw text for detection, but we want a clean title string.
+                        for kw in ad_keywords:
+                            if kw in potential_title:
+                                potential_title = potential_title.split(kw)[0].strip()
+                        
+                        if len(potential_title) >= 8 or slug == "chapter-0":
+                            title = potential_title
+                            found_title = True
+                            break
+                if found_title: break
+            
             cleaned_p_tags = []
             for p in p_tags:
                 text = p.get_text(" ", strip=True)
-                is_title_p = (title_pattern and title_pattern in text) or (meta_title and meta_title in text)
                 
+                # Check for critical split markers for the 807-808 case
+                is_split_marker = False
                 if slug == "chapter-807-808":
                     if "Chapter 807" in text or "Chapter 808" in text or "Afterword" in text:
-                        is_title_p = True
+                        is_split_marker = True
 
-                if any(kw.lower() in text.lower() for kw in ad_keywords) and not is_title_p:
+                # If it contains an ad keyword, remove it, UNLESS it's a critical split marker
+                if any(kw.lower() in text.lower() for kw in ad_keywords) and not is_split_marker:
                     continue
                 
                 if not text:
                     continue
                                     
                 cleaned_p_tags.append(p)
+
+            # Apply textual cleanup to the valid tags in-place
+            for p in cleaned_p_tags:
+                for text_node in p.find_all(string=True, recursive=True):
+                    cleaned_text = clean_text_node_content(str(text_node))
+                    if cleaned_text != str(text_node):
+                        text_node.replace_with(cleaned_text)
 
             await page.close()
 
@@ -374,7 +459,7 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                     
                     found_807_in_p = False
                     found_808_in_p = False
-                    
+
                     for line in lines:
                         match807 = re.search(r'Chapter 807[:\s\-].*$', line, re.I)
                         # Fix: Anchor Afterword to start of line to avoid matching usage in sentences
@@ -388,54 +473,45 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                             title808 = match808.group(0).strip()
                             found_808_in_p = True
                     
-                    if current_ch == 807: ch807_content.append(str(p))
-                    else: ch808_content.append(str(p))
+                    if current_ch == 807: 
+                        if not found_807_in_p:
+                            ch807_content.append(str(p))
+                    else: 
+                        if not found_808_in_p:
+                            ch808_content.append(str(p))
+                
+                content807 = apply_smartypants(italicize_html_content("\n".join(ch807_content)))
+                content808 = apply_smartypants(italicize_html_content("\n".join(ch808_content)))
                 
                 return {
-                    "chapter-807": {"content": "\n".join(ch807_content), "title": title807, "source_slug": slug},
-                    "chapter-808": {"content": "\n".join(ch808_content), "title": title808, "source_slug": slug}
+                    "chapter-807": {"content": content807, "title": title807, "source_slug": slug},
+                    "chapter-808": {"content": content808, "title": title808, "source_slug": slug}
                 }
             
-            # Normal title extraction
-            title = meta_title if meta_title else slug
-            
-            # Prioritize finding a detailed title in the content
-            # Most chapters start with "Chapter X: [Title]"
-            found_title = False
-            title_search_pattern = title_pattern if title_pattern else r"(Chapter \d+|Author's Q&A \(\d+\)|Author's Tidbit \(\d+\))"
-            
-            for p in cleaned_p_tags[:5]:
-                text_with_newlines = p.get_text("\n", strip=True)
-                lines = [l.strip() for l in text_with_newlines.split("\n") if l.strip()]
+            # Remove the first paragraph if it is identical to the title
+            # This logic happens AFTER title extraction, so we don't break title detection.
+            if cleaned_p_tags:
+                first_p_text = cleaned_p_tags[0].get_text(" ", strip=True)
+                # Clean up the texts for comparison (remove smart quotes or extra spaces if any)
+                clean_first_p = clean_text_node_content(first_p_text).replace('"', '').replace("'", "").lower().strip()
+                clean_title = clean_text_node_content(title).replace('"', '').replace("'", "").lower().strip()
                 
-                for line in lines:
-                    # Look for "Chapter X: ..." or similar. Spacer is optional.
-                    # This allows matching "Prologue" or "Chapter 1" exactly.
-                    match = re.search(rf'^({title_search_pattern}([:\s\-].*)?)$', line, re.I)
-                    if not match and title_pattern:
-                        match = re.search(rf'^({title_pattern}(\s+.*)?)$', line, re.I)
+                # Check for exact match or if title is "Chapter X: Title" and first line is "Title" etc
+                # Or if first line is "Chapter X" and title is "Chapter X"
+                if clean_first_p == clean_title or clean_title in clean_first_p:
+                    # Remove the first paragraph
+                    cleaned_p_tags.pop(0)
 
-                    # Fallback: Check for generic "Chapter Digits" if specific pattern failed
-                    # This helps if the chapter content has a typo (e.g. Chapter 228 instead of 238)
-                    if not match:
-                        match = re.search(r'^(Chapter \d+([:\s\-].*)?)$', line, re.I)
-
-                    if match:
-                        potential_title = match.group(1).strip()
-                        # Clean the potential title
-                        for kw in ad_keywords:
-                            if kw in potential_title:
-                                potential_title = potential_title.split(kw)[0].strip()
-                        
-                        # Prioritize the content title if it's descriptive enough, 
-                        # or if the current title is likely just a merger from metadata.
-                        if len(potential_title) >= 8 or slug == "chapter-0":
-                            title = potential_title
-                            found_title = True
-                            break
-                if found_title: break
+            # Serialize first to get plain HTML with straight quotes
+            final_content = "\n".join([str(p) for p in cleaned_p_tags])
             
-            return {slug: {"content": "\n".join([str(p) for p in cleaned_p_tags]), "title": title}}
+            # Apply italicization (looks for straight '...')
+            final_content = italicize_html_content(final_content)
+            
+            # Apply smart quotes (converts straight quotes to curly, preserving tags)
+            final_content = apply_smartypants(final_content)
+            
+            return {slug: {"content": final_content, "title": title}}
 
         except PlaywrightTimeoutError:
             print(f"Timeout on chapter {slug}, attempt {attempt + 1}")
@@ -470,6 +546,7 @@ def create_epub(metadata_obj, chapters_data):
     book.set_title("A Regressor's Tale of Cultivation")
     book.set_language("en")
     book.add_author("엄청난 (Tremendous)")
+    book.add_metadata('DC', 'description', DESCRIPTION)
 
     # Handle cover image
     cover_path = os.path.join(DATA_DIR, "cover.webp")
@@ -479,7 +556,20 @@ def create_epub(metadata_obj, chapters_data):
     elif cover_image_url:
         print("Warning: Cover image URL found but local image missing. Run without --force to potentially skip download if already existing (not applicable here), or check generation logs.")
 
-    style = 'p { margin-bottom: 1.2em; line-height: 1.5; } h1 { text-align: center; } .date { text-align: center; font-style: italic; color: #666; margin-bottom: 2em; }'
+    style = '''
+    body { 
+        -webkit-hyphens: none; 
+        -moz-hyphens: none; 
+        hyphens: none; 
+    }
+    p { 
+        margin-bottom: 1.5em; 
+        line-height: 1.5; 
+        text-indent: 0; 
+    } 
+    h1 { text-align: center; } 
+    .date { text-align: center; font-style: italic; color: #666; margin-bottom: 2em; }
+    '''
     nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
     book.add_item(nav_css)
 
@@ -536,6 +626,10 @@ async def main(limit_indices=None, force_rebuild=False):
     # Sync metadata titles to chapters_data if chapters_data has generic titles
     data_changed = False
     for slug, meta in metadata.items():
+        # Clean exception: Never sync/overwrite Chapter 0 (Prologue)
+        if slug == "chapter-0":
+            continue
+
         if slug in chapters_data:
             ch_title = chapters_data[slug].get("title", "")
             meta_title = meta.get("title", "")
