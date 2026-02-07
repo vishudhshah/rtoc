@@ -1,0 +1,55 @@
+@font-face {
+  font-family: 'Literata';
+  src: url('../fonts/Literata.ttf');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'FoglihtenNo07';
+  src: url('../fonts/FoglihtenNo07calt.otf');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'NotoSerifTC';
+  src: url('../fonts/NotoSerifTC-Regular.ttf');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Huakang';
+  src: url('../fonts/Huakang.ttf');
+  font-weight: bold;
+  font-style: normal;
+}
+
+body {
+  -webkit-hyphens: none;
+  -moz-hyphens: none;
+  hyphens: none;
+  font-family: 'Literata', 'NotoSerifTC';
+}
+
+p {
+  margin-bottom: 1.5em;
+  line-height: 1.5;
+  text-indent: 0;
+}
+
+h1 {
+  text-align: center;
+  font-family: 'FoglihtenNo07', 'Huakang', 'NotoSerifTC';
+  font-size: 1.6em;
+  font-weight: normal;
+}
+
+.date {
+  text-align: center;
+  font-style: italic;
+  font-family: 'Literata';
+  color: #666;
+  margin-bottom: 2em;
+}

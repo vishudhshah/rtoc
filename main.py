@@ -339,16 +339,20 @@ def apply_smartypants(text):
         return smartypants.smartypants(text, attr=attr)
     return text
 
-def italicize_html_content(text):
+def format_html_content(text):
     # Italicize single quoted sentences
     # Pattern looks for single quotes wrapping content.
     # Inner content allows:
     # 1. Any non-quote non-tag-start character: [^'<]
     # 2. An apostrophe that is sandwiched between word characters (e.g. don't, it's): (?<=\w)'(?=\w)
-    pattern = r"(?<=[ >\n])'((?:[^'<]|(?<=\w)'(?=\w))+?)'(?=[ <.,;:!?\n])"
+    pattern_italic = r"(?<=[ >\n])'((?:[^'<]|(?<=\w)'(?=\w))+?)'(?=[ <.,;:!?\n])"
     
     # Use a callback to wrap in em tags
-    text = re.sub(pattern, r"<em>'\1'</em>", text)
+    text = re.sub(pattern_italic, r"<em>'\1'</em>", text)
+    
+    # Bold square bracketed content
+    pattern_bold = r"\[(.*?)\]"
+    text = re.sub(pattern_bold, r"<strong>[\1]</strong>", text)
     
     return text
 
@@ -480,8 +484,8 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                         if not found_808_in_p:
                             ch808_content.append(str(p))
                 
-                content807 = apply_smartypants(italicize_html_content("\n".join(ch807_content)))
-                content808 = apply_smartypants(italicize_html_content("\n".join(ch808_content)))
+                content807 = apply_smartypants(format_html_content("\n".join(ch807_content)))
+                content808 = apply_smartypants(format_html_content("\n".join(ch808_content)))
                 
                 return {
                     "chapter-807": {"content": content807, "title": title807, "source_slug": slug},
@@ -506,7 +510,7 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
             final_content = "\n".join([str(p) for p in cleaned_p_tags])
             
             # Apply italicization (looks for straight '...')
-            final_content = italicize_html_content(final_content)
+            final_content = format_html_content(final_content)
             
             # Apply smart quotes (converts straight quotes to curly, preserving tags)
             final_content = apply_smartypants(final_content)
@@ -535,6 +539,71 @@ async def worker(context, queue, chapters_data, semaphore):
                 print(f"Failed to generate {slug} after retries.")
         queue.task_done()
 
+def embed_fonts(book, style_content):
+    """
+    Embeds fonts into the EPUB book and updates CSS if necessary.
+    Returns the (potentially modified) style content.
+    """
+    fonts_dir = "fonts"
+    if not os.path.exists(fonts_dir):
+        return style_content
+
+    # Map of Expected Filename in EPUB (from CSS) -> Possible local filenames
+    desired_fonts = {
+        "Literata.ttf": ["Literata.ttf", "Literata-Regular.ttf", "Literata[opsz,wght].ttf"],
+        "FoglihtenNo07calt.otf": ["FoglihtenNo07calt.otf", "FoglihtenNo07.otf", "FoglihtenNo07.ttf", "FoglihtenNo07-Regular.otf"],
+        "NotoSerifTC-Regular.ttf": ["NotoSerifTC-Regular.ttf", "NotoSerifTC.ttf"],
+        "Huakang.ttf": ["Huakang.ttf", "Huakang running script.ttf"],
+    }
+    
+    for epub_name, candidate_names in desired_fonts.items():
+        found_path = None
+        # 1. Try exact matches from candidate list
+        for local_name in candidate_names:
+            p = os.path.join(fonts_dir, local_name)
+            if os.path.exists(p):
+                found_path = p
+                break
+        
+        # 2. Try lenient search if not found
+        if not found_path:
+            for f_name in os.listdir(fonts_dir):
+                normalized = f_name.lower()
+                target_base = epub_name.split('.')[0].lower()
+                if target_base in normalized:
+                    found_path = os.path.join(fonts_dir, f_name)
+                    break
+
+        if found_path:
+            with open(found_path, 'rb') as f:
+                font_data = f.read()
+                
+            # Determine mime type
+            mime = "application/font-sfnt"
+            actual_ext = os.path.splitext(found_path)[1].lower()
+            if actual_ext == ".otf":
+                mime = "application/vnd.ms-opentype"
+            
+            # Handle extension mismatch (e.g. found .ttf but CSS expects .otf)
+            expected_ext = os.path.splitext(epub_name)[1].lower()
+            final_filename = epub_name
+            
+            if actual_ext != expected_ext:
+                final_filename = os.path.splitext(epub_name)[0] + actual_ext
+                style_content = style_content.replace(epub_name, final_filename)
+                
+            font_item = epub.EpubItem(
+                uid=f"font_{epub_name.replace('.', '_')}",
+                file_name=f"fonts/{final_filename}",
+                media_type=mime,
+                content=font_data
+            )
+            book.add_item(font_item)
+        else:
+            print(f"Warning: Font {epub_name} requested by CSS but not found in {fonts_dir}.")
+            
+    return style_content
+
 def create_epub(metadata_obj, chapters_data):
     print("Generating EPUB...")
     metadata = metadata_obj.get("metadata", {})
@@ -556,20 +625,13 @@ def create_epub(metadata_obj, chapters_data):
     elif cover_image_url:
         print("Warning: Cover image URL found but local image missing. Run without --force to potentially skip download if already existing (not applicable here), or check generation logs.")
 
-    style = '''
-    body { 
-        -webkit-hyphens: none; 
-        -moz-hyphens: none; 
-        hyphens: none; 
-    }
-    p { 
-        margin-bottom: 1.5em; 
-        line-height: 1.5; 
-        text-indent: 0; 
-    } 
-    h1 { text-align: center; } 
-    .date { text-align: center; font-style: italic; color: #666; margin-bottom: 2em; }
-    '''
+    style_path = "style.css"
+    with open(style_path, 'r', encoding='utf-8') as f:
+        style = f.read()
+    
+    # Embed fonts and update style if needed
+    style = embed_fonts(book, style)
+
     nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
     book.add_item(nav_css)
 
