@@ -692,6 +692,41 @@ def subset_font(font_data, unicodes, flavor):
     font.save(buf)
     return buf.getvalue(), captured.getvalue().strip()
 
+def wrap_cjk_spans(html_str):
+    """Wrap CJK character runs in <span class="cjk"> for explicit font assignment.
+
+    Moon+ Reader (and some other Android readers) don't fall through a CSS
+    font-family fallback chain when an embedded font lacks a glyph — they jump
+    straight to the system font instead.  Wrapping CJK runs in a span with a
+    direct font-family rule bypasses the fallback entirely.
+    """
+    CJK_RE = re.compile(r'([\u3000-\u9FFF\uF900-\uFAFF\uFE10-\uFE4F\uFF00-\uFFEF]+)')
+    soup = BeautifulSoup(html_str, 'html.parser')
+    for text_node in list(soup.find_all(string=True)):
+        parent = text_node.parent
+        if parent and parent.name in ('script', 'style'):
+            continue
+        if parent and parent.name == 'span' and 'cjk' in parent.get('class', []):
+            continue
+        text = str(text_node)
+        parts = CJK_RE.split(text)
+        if len(parts) <= 1:
+            continue
+        in_heading = any(p.name in ('h1', 'h2', 'h3') for p in text_node.parents)
+        css_class = 'cjk-heading' if in_heading else 'cjk'
+        for part in parts:
+            if not part:
+                continue
+            if CJK_RE.match(part):
+                span = soup.new_tag('span', **{'class': css_class})
+                span.string = part
+                text_node.insert_before(span)
+            else:
+                text_node.insert_before(part)
+        text_node.decompose()
+    return str(soup)
+
+
 def embed_fonts(book, style_content):
     """
     Embeds fonts into the EPUB book and updates CSS if necessary.
@@ -762,10 +797,11 @@ def embed_fonts(book, style_content):
                             print(f"    Warning: {line}")
 
             # Determine mime type
-            mime = "application/font-sfnt"
             actual_ext = os.path.splitext(found_path)[1].lower()
             if actual_ext == ".otf":
-                mime = "application/vnd.ms-opentype"
+                mime = "font/otf"
+            else:
+                mime = "font/ttf"
             
             # Handle extension mismatch (e.g. found .ttf but CSS expects .otf)
             expected_ext = os.path.splitext(epub_name)[1].lower()
@@ -836,7 +872,8 @@ def create_epub(metadata_obj, chapters_data):
             # Sanitize file name
             safe_slug = re.sub(r'[^a-zA-Z0-9-]', '_', t_slug)
             ch_html = epub.EpubHtml(title=title, file_name=f'{safe_slug}.xhtml', lang='en')
-            ch_html.content = f'<h1>{title}</h1><div class="date">Released: {release_date}</div>{content}'
+            raw_html = f'<h1>{title}</h1><div class="date">Released: {release_date}</div>{content}'
+            ch_html.content = wrap_cjk_spans(raw_html)
             ch_html.add_item(nav_css)
             book.add_item(ch_html)
             chapters.append(ch_html)

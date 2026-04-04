@@ -30,7 +30,7 @@ body {
   -webkit-hyphens: none;
   -moz-hyphens: none;
   hyphens: none;
-  font-family: 'Literata', 'NotoSerifTC';
+  font-family: 'Literata', 'NotoSerifTC', serif;
 }
 
 p {
@@ -41,9 +41,17 @@ p {
 
 h1 {
   text-align: center;
-  font-family: 'FoglihtenNo07', 'Huakang', 'NotoSerifTC';
+  font-family: 'FoglihtenNo07', 'Huakang', 'NotoSerifTC', serif;
   font-size: 1.6em;
   font-weight: normal;
+}
+
+.cjk {
+  font-family: 'NotoSerifTC', serif;
+}
+
+.cjk-heading {
+  font-family: 'Huakang', 'NotoSerifTC', serif;
 }
 
 .date {
