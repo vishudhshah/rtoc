@@ -1,12 +1,16 @@
+import io
 import os
 import json
 import asyncio
 import re
+import contextlib
 import smartypants
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from ebooklib import epub
 import httpx
+from fontTools import subset as ft_subset
+from fontTools.ttLib import TTFont
 
 BASE_URL = "https://wetriedtls.com"
 SERIES_URL = f"{BASE_URL}/series/a-regressors-tale-of-cultivation"
@@ -339,6 +343,87 @@ def apply_smartypants(text):
         return smartypants.smartypants(text, attr=attr)
     return text
 
+# Matches a </p> or </hN> immediately followed (with optional whitespace) by a <p> or <hN> open tag.
+# Used to split bracket content at paragraph boundaries for valid HTML wrapping.
+_BRACKET_PARA_BOUNDARY = re.compile(
+    r'(</(?:p|h[1-6])[^>]*>\s*<(?:p|h[1-6])[^>]*>)',
+    re.I | re.DOTALL
+)
+
+def _format_bracket_span(content, is_inner):
+    """
+    Wrap bracket content in bold (outer) or bold+italic (inner) tags.
+    When the content spans paragraph boundaries, each paragraph segment is
+    wrapped individually to maintain valid HTML.
+    """
+    if is_inner:
+        first_open = '<strong><em>['
+        mid_open   = '<strong><em>'
+        mid_close  = '</em></strong>'
+        close      = ']</em></strong>'
+    else:
+        first_open = '<strong>['
+        mid_open   = '<strong>'
+        mid_close  = '</strong>'
+        close      = ']</strong>'
+
+    segments = _BRACKET_PARA_BOUNDARY.split(content)
+
+    if len(segments) == 1:
+        return f'{first_open}{content}{close}'
+
+    result = []
+    for i, seg in enumerate(segments):
+        if i % 2 == 0:  # content segment
+            if i == 0:
+                result.append(f'{first_open}{seg}{mid_close}')
+            elif i == len(segments) - 1:
+                result.append(f'{mid_open}{seg}{close}')
+            else:
+                result.append(f'{mid_open}{seg}{mid_close}')
+        else:  # paragraph boundary tag (</p>...<p>)
+            result.append(seg)
+
+    return ''.join(result)
+
+
+def apply_bracket_formatting(text):
+    """
+    Apply square-bracket formatting to HTML content:
+      [text]              → <strong>[text]</strong>
+      [outer [inner] txt] → outer bold, inner bold+italic
+      [para1            ] spanning multiple <p> tags → each paragraph segment
+                            wrapped individually to stay valid HTML
+    Unmatched brackets are left as-is.
+    """
+    parts = []   # accumulated output segments
+    stack = []   # indices into `parts` of opening-bracket placeholders
+
+    i = 0
+    while i < len(text):
+        if text[i] == '[':
+            stack.append(len(parts))
+            parts.append(None)   # placeholder; becomes '[' if never closed
+            i += 1
+        elif text[i] == ']' and stack:
+            open_idx = stack.pop()
+            # Collect everything written since the matching '['
+            content = ''.join(p if p is not None else '[' for p in parts[open_idx + 1:])
+            parts = parts[:open_idx]
+            is_inner = len(stack) > 0
+            parts.append(_format_bracket_span(content, is_inner))
+            i += 1
+        else:
+            # Consume a run of non-bracket characters in one slice
+            j = i + 1
+            while j < len(text) and text[j] not in '[]':
+                j += 1
+            parts.append(text[i:j])
+            i = j
+
+    return ''.join(p if p is not None else '[' for p in parts)
+
+
 def format_html_content(text):
     # Italicize single quoted sentences
     # Pattern looks for single quotes wrapping content.
@@ -346,14 +431,13 @@ def format_html_content(text):
     # 1. Any non-quote non-tag-start character: [^'<]
     # 2. An apostrophe that is sandwiched between word characters (e.g. don't, it's): (?<=\w)'(?=\w)
     pattern_italic = r"(?<=[ >\n])'((?:[^'<]|(?<=\w)'(?=\w))+?)'(?=[ <.,;:!?\n])"
-    
+
     # Use a callback to wrap in em tags
     text = re.sub(pattern_italic, r"<em>'\1'</em>", text)
-    
-    # Bold square bracketed content
-    pattern_bold = r"\[(.*?)\]"
-    text = re.sub(pattern_bold, r"<strong>[\1]</strong>", text)
-    
+
+    # Bold (and nested bold+italic) square-bracketed content, cross-paragraph aware
+    text = apply_bracket_formatting(text)
+
     return text
 
 async def generate_chapter_content_async(context, url, slug, meta_title=None):
@@ -539,6 +623,75 @@ async def worker(context, queue, chapters_data, semaphore):
                 print(f"Failed to generate {slug} after retries.")
         queue.task_done()
 
+def collect_unicode_chars(book):
+    """Return a set of all Unicode codepoints used across all XHTML items in the book."""
+    chars = set()
+    for item in book.items:
+        if isinstance(item, epub.EpubHtml):
+            content = item.content
+            if isinstance(content, bytes):
+                content = content.decode('utf-8', errors='ignore')
+            chars.update(ord(c) for c in content)
+    return chars
+
+def subset_font(font_data, unicodes, flavor):
+    """Subset font_data (bytes) to only the given unicode codepoints. Returns (bytes, warnings)."""
+    options = ft_subset.Options()
+    options.flavor = flavor  # None for ttf, 'woff2' etc for web fonts
+    options.ignore_missing_unicodes = True
+    font = TTFont(io.BytesIO(font_data))
+
+    # Some fonts (e.g. Huakang) have more hmtx data than fontTools expects for
+    # the declared glyph count, causing subsetting to produce an empty result.
+    # Replace the malformed hmtx with a synthetic valid one so fontTools can
+    # subset it normally. Glyph advance widths are set to hhea.advanceWidthMax.
+    if 'hhea' in font:
+        n_metrics = font['hhea'].numberOfHMetrics
+        n_glyphs = len(font.getGlyphOrder())
+        expected_hmtx_size = n_metrics * 4 + max(0, n_glyphs - n_metrics) * 2
+        raw_hmtx_size = len(font.reader['hmtx']) if 'hmtx' in font.reader else 0
+        if raw_hmtx_size > expected_hmtx_size:
+            from fontTools.ttLib.tables import _h_m_t_x as hmtx_mod
+            default_width = font['hhea'].advanceWidthMax
+            synthetic_hmtx = hmtx_mod.table__h_m_t_x()
+            synthetic_hmtx.metrics = {name: (default_width, 0) for name in font.getGlyphOrder()}
+            font['hmtx'] = synthetic_hmtx
+
+    # Some fonts (e.g. Huakang) have no Unicode cmap — only a legacy encoding
+    # like Big5. fontTools subsets by Unicode, so it strips everything and
+    # produces an empty result. Decode the legacy cmap into Unicode and inject
+    # a proper format 4 Unicode cmap so subsetting works normally.
+    if font.getBestCmap() is None:
+        from fontTools.ttLib.tables._c_m_a_p import cmap_format_4
+        unicode_to_glyph = {}
+        for table in font['cmap'].tables:
+            for cp, glyph_name in table.cmap.items():
+                high = (cp >> 8) & 0xFF
+                low  = cp & 0xFF
+                raw  = bytes([high, low]) if high else bytes([low])
+                for enc in ['big5hkscs', 'big5', 'cp950']:
+                    try:
+                        for ch in raw.decode(enc):
+                            unicode_to_glyph.setdefault(ord(ch), glyph_name)
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        pass
+        unicode_cmap = cmap_format_4(4)
+        unicode_cmap.platformID = 3
+        unicode_cmap.platEncID = 1  # Unicode BMP
+        unicode_cmap.language = 0
+        unicode_cmap.cmap = unicode_to_glyph
+        font['cmap'].tables.append(unicode_cmap)
+
+    subsetter = ft_subset.Subsetter(options=options)
+    subsetter.populate(unicodes=unicodes)
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+        subsetter.subset(font)
+    buf = io.BytesIO()
+    font.save(buf)
+    return buf.getvalue(), captured.getvalue().strip()
+
 def embed_fonts(book, style_content):
     """
     Embeds fonts into the EPUB book and updates CSS if necessary.
@@ -548,12 +701,19 @@ def embed_fonts(book, style_content):
     if not os.path.exists(fonts_dir):
         return style_content
 
+    print("Subsetting fonts to only include characters used in the book...")
+    unicodes = collect_unicode_chars(book)
+    if len(unicodes) == 0:
+        print("  Warning: No characters collected — fonts will be subset to empty. Check that chapters are loaded before font embedding.")
+    else:
+        print(f"  {len(unicodes):,} unique characters collected from book content.")
+
     # Map of Expected Filename in EPUB (from CSS) -> Possible local filenames
     desired_fonts = {
         "Literata.ttf": ["Literata.ttf", "Literata-Regular.ttf", "Literata[opsz,wght].ttf"],
         "FoglihtenNo07calt.otf": ["FoglihtenNo07calt.otf", "FoglihtenNo07.otf", "FoglihtenNo07.ttf", "FoglihtenNo07-Regular.otf"],
         "NotoSerifTC-Regular.ttf": ["NotoSerifTC-Regular.ttf", "NotoSerifTC.ttf"],
-        "Huakang.ttf": ["Huakang.ttf", "Huakang running script.ttf"],
+        "Huakang.ttf": ["Huakang.ttf", "Huakang running script.ttf", "DynaLab Huakang.ttf"],
     }
     
     for epub_name, candidate_names in desired_fonts.items():
@@ -577,7 +737,30 @@ def embed_fonts(book, style_content):
         if found_path:
             with open(found_path, 'rb') as f:
                 font_data = f.read()
-                
+
+            original_kb = len(font_data) // 1024
+            print(f"  {epub_name} ({original_kb}KB)...", end=" ", flush=True)
+            subsetted, ft_warnings = subset_font(font_data, unicodes, flavor=None)
+            result_kb = len(subsetted) // 1024
+            if result_kb == 0:
+                print(f"subsetting failed — embedding full font ({original_kb}KB)")
+                if ft_warnings:
+                    for line in ft_warnings.splitlines():
+                        line = line.strip()
+                        if line:
+                            print(f"    Reason: {line}")
+            else:
+                font_data = subsetted
+                print(f"OK ({original_kb}KB -> {result_kb}KB)")
+                if ft_warnings:
+                    for line in ft_warnings.splitlines():
+                        line = line.strip()
+                        if "don't know how to subset" in line or "NOT subset" in line:
+                            table = line.split()[0] if line else "unknown"
+                            print(f"    Note: '{table}' is a non-standard font table and was safely removed.")
+                        elif line:
+                            print(f"    Warning: {line}")
+
             # Determine mime type
             mime = "application/font-sfnt"
             actual_ext = os.path.splitext(found_path)[1].lower()
@@ -628,15 +811,12 @@ def create_epub(metadata_obj, chapters_data):
     style_path = "style.css"
     with open(style_path, 'r', encoding='utf-8') as f:
         style = f.read()
-    
-    # Embed fonts and update style if needed
-    style = embed_fonts(book, style)
 
     nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
     book.add_item(nav_css)
 
     chapters = []
-    
+
     for slug in ordered_slugs:
         # Special case: 807-808 page needs to map to two entries
         target_slugs = [slug]
@@ -660,6 +840,10 @@ def create_epub(metadata_obj, chapters_data):
             ch_html.add_item(nav_css)
             book.add_item(ch_html)
             chapters.append(ch_html)
+
+    # Embed fonts AFTER chapters are added so all characters can be collected
+    style = embed_fonts(book, style)
+    nav_css.content = style  # Update nav CSS with any font filename changes
 
     book.toc = tuple(chapters)
     book.add_item(epub.EpubNcx())
@@ -770,7 +954,7 @@ async def main(limit_indices=None, force_rebuild=False):
                     else:
                         print(f"Failed to download cover image: Status {resp.status_code}")
             except Exception as e:
-                print(f"Error downloading cover image: {e}")
+                print(f"Error downloading cover image: {type(e).__name__}: {e}")
 
     if chapters_data:
         create_epub(metadata_obj, chapters_data)
