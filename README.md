@@ -14,6 +14,8 @@ A Python script to generate an EPUB of ***A Regressor's Tale of Cultivation*** f
 ### 1. Set up the environment
 It is **highly recommended** to use a virtual environment to avoid conflicts (and it's required on many modern systems).
 
+> **Note:** Depending on your system, you may need to use `python3` instead of `python`, and `pip3` instead of `pip` in the steps below.
+
 **Windows (PowerShell):**
 ```powershell
 # Create virtual environment
@@ -27,43 +29,40 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 # Install dependencies
 pip install -r requirements.txt
-playwright install chromium
+python -m playwright install chromium
 ```
 
 **Mac/Linux:**
 ```bash
 # Create virtual environment
-python3 -m venv venv
+python -m venv venv
 
 # Activate it
 source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-playwright install chromium
+python -m playwright install chromium
 ```
 
 ### 2. Run the generator
 ```bash
-# You may need to use 'python' or 'python3' depending on your setup
 python main.py
 ```
 *Note: Requires an active internet connection. The final EPUB and a cache folder (`data/`) will be generated in the current directory.*
 
-**Troubleshooting:** If you get a "command not found" error, try using `python3` instead of `python`, or `pip3` instead of `pip` in the installation steps above.
-
 ## Advanced Usage
 - **Specific Chapters** (by index):
   ```bash
-  python3 main.py 0 1 100 807808
+  python main.py 0 1 100 807808
   ```
 - **Force Re-generate** (bypass cache):
   ```bash
-  python3 main.py --force
+  python main.py --force
   ```
 - **Force specific chapters**:
   ```bash
-  python3 main.py 0 1 --force
+  python main.py 0 1 --force
   ```
 
 ## Which E-Reader to use?
