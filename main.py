@@ -401,7 +401,14 @@ def apply_bracket_formatting(text):
 
     i = 0
     while i < len(text):
-        if text[i] == '[':
+        if text[i] == '<':
+            # Consume the entire HTML tag literally — don't process brackets inside attributes
+            j = i + 1
+            while j < len(text) and text[j] != '>':
+                j += 1
+            parts.append(text[i:j + 1])
+            i = j + 1
+        elif text[i] == '[':
             stack.append(len(parts))
             parts.append(None)   # placeholder; becomes '[' if never closed
             i += 1
@@ -414,9 +421,9 @@ def apply_bracket_formatting(text):
             parts.append(_format_bracket_span(content, is_inner))
             i += 1
         else:
-            # Consume a run of non-bracket characters in one slice
+            # Consume a run of non-bracket, non-tag characters in one slice
             j = i + 1
-            while j < len(text) and text[j] not in '[]':
+            while j < len(text) and text[j] not in '[]<':
                 j += 1
             parts.append(text[i:j])
             i = j
@@ -466,8 +473,8 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                 await page.close()
                 continue
                 
-            p_tags = container.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-            ad_keywords = ["Discord", "Ko-fi", "Patreon", "Want more chapters", "Next chapter", "Previous chapter", "Consider supporting", "buymeacoffee", "TranslatingNovice", "Z0Rel", "BlueMangoAde"]
+            p_tags = container.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr'])
+            ad_keywords = ["Discord", "Ko-fi", "Patreon", "Want more chapters", "Next chapter", "Previous chapter", "Consider supporting", "buymeacoffee", "TranslatingNovice", "Z0Rel", "BlueMangoAde", "wetriedtls"]
             
             title_pattern = ""
             if slug == "chapter-0":
@@ -523,7 +530,7 @@ async def generate_chapter_content_async(context, url, slug, meta_title=None):
                 if any(kw.lower() in text.lower() for kw in ad_keywords) and not is_split_marker:
                     continue
                 
-                if not text:
+                if not text and p.name != 'hr':
                     continue
                                     
                 cleaned_p_tags.append(p)
