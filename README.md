@@ -1,6 +1,6 @@
 # A Regressor's Tale of Cultivation EPUB Generator
 
-A Python script to generate an EPUB of ***A Regressor's Tale of Cultivation*** from [We Tried TLS](https://wetriedtls.com/series/a-regressors-tale-of-cultivation).
+A Python script to generate an EPUB of ***A Regressor's Tale of Cultivation*** from [We Tried TLs](https://wetriedtls.com/series/a-regressors-tale-of-cultivation).
 
 ## Features
 - **Built for E-Readers**: Generates a clean EPUB with a book cover, Table of Contents, and metadata.
@@ -80,9 +80,9 @@ Issues and feature requests are welcome!
 ## Disclaimer
 - This tool is intended for personal, offline reading for fans who want a better mobile experience. Please do not use this tool for mass distribution or commercial purposes.
 - **Free Chapters Only**: To avoid legal consequences and respect the translators, this script **only generates freely available chapters**. 
-- **Adaptability**: While written specifically for *A Regressor's Tale of Cultivation*, the logic can theoretically be adapted for any series on We Tried TLS with some minor adjustments to handle series-specific edge cases.
+- **Adaptability**: While written specifically for *A Regressor's Tale of Cultivation*, the logic can theoretically be adapted for any series on We Tried TLs with some minor adjustments to handle series-specific edge cases.
 
-To respect the hard work of the original author and the translation team at We Tried TLS, **this repository does not host the generated EPUB file.** Consider supporting the original creators!
-- **Official Site:** [We Tried TLS](https://wetriedtls.com/series/a-regressors-tale-of-cultivation)
+To respect the hard work of the original author and the translation team at We Tried TLs, **this repository does not host the generated EPUB file.** Consider supporting the original creators!
+- **Official Site:** [We Tried TLs](https://wetriedtls.com/series/a-regressors-tale-of-cultivation)
 - **Discord:** Join the [We Tried Discord](https://dsc.gg/wetried) for community updates and ko-fi link.
 - **Official Author:** Support the author of the webnovel, 엄청난 (Tremendous), on [Munpia](https://novel.munpia.com/346981) or [Naver](https://series.naver.com/novel/detail.series?productNo=9807283).
