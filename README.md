@@ -19,13 +19,13 @@ It is **highly recommended** to use a virtual environment to avoid conflicts (an
 **Windows (PowerShell):**
 ```powershell
 # Create virtual environment
-python -m venv venv
+python -m venv .venv
 
 # Allow script execution (run if activation fails)
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 # Activate it
-.\venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 
 # Install dependencies
 pip install -r requirements.txt
@@ -35,10 +35,10 @@ python -m playwright install chromium
 **Mac/Linux:**
 ```bash
 # Create virtual environment
-python -m venv venv
+python -m venv .venv
 
 # Activate it
-source venv/bin/activate
+source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
